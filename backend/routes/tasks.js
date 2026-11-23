@@ -1,136 +1,191 @@
 import { Router } from "express";
-import { readDB, writeDB } from "../db.js";
+import { query, normalizeDeadlineToUtc } from "../db.js";
 import { requireAuth } from "../middleware/auth.js";
 
 const router = Router();
 
-// Seluruh endpoint tugas membutuhkan login.
 router.use(requireAuth);
 
 /**
  * GET /api/tasks
- * Daftar seluruh tugas milik pengguna yang sedang login, lintas semua mata
- * kuliah. Setiap tugas menyertakan `mata_kuliah` (nama mata kuliahnya).
+ * Daftar seluruh tugas milik pengguna yang sedang login, lintas semua mata kuliah.
  *
- * Urutan saat ini: `created_at` terbaru di atas.
- *
- * Response : 200 { tasks }
- *
- * CATATAN UNTUK PESERTA STUDI KASUS:
- * Ini adalah titik yang relevan untuk fitur "Reminder Tugas Mendekati Deadline".
- * Silakan tambahkan logic untuk menandai/mengurutkan ulang tugas yang
- * sisa waktunya < 24 jam di sini (atau di tempat lain sesuai rancangan Anda).
+ * Urutan baseline saat ini: `created_at` terbaru di atas.
+ * (Klasifikasi 4-bucket F01–F04 & AI Triage akan ditambahkan pada Modul 1 & 2.)
  */
-router.get("/", (req, res) => {
-  const db = readDB();
-  const tasks = db.tasks
-    .filter((t) => t.user_id === req.user.id)
-    .map((t) => {
-      const course = db.courses.find((c) => c.id === t.mata_kuliah_id);
-      return { ...t, mata_kuliah: course ? course.name : null };
-    })
-    .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-
-  res.json({ tasks });
+router.get("/", async (req, res) => {
+  try {
+    const { rows } = await query(
+      `SELECT
+         t.id,
+         t.user_id,
+         t.mata_kuliah_id,
+         t.judul,
+         t.deskripsi,
+         t.deadline,
+         t.status,
+         t.created_at,
+         mk.name AS mata_kuliah
+       FROM tugas t
+       INNER JOIN mata_kuliah mk ON mk.id = t.mata_kuliah_id
+       WHERE mk.user_id = $1
+       ORDER BY t.created_at DESC`,
+      [req.user.id]
+    );
+    res.json({ tasks: rows });
+  } catch (err) {
+    console.error("Get tasks error:", err);
+    res.status(500).json({ error: "Gagal memuat daftar tugas." });
+  }
 });
 
 /**
  * GET /api/tasks/:id
- * Detail satu tugas milik pengguna yang sedang login.
- *
- * Response : 200 { task } | 404 tidak ditemukan
  */
-router.get("/:id", (req, res) => {
-  const id = Number(req.params.id);
-  const db = readDB();
-  const task = db.tasks.find((t) => t.id === id && t.user_id === req.user.id);
-  if (!task) {
-    return res.status(404).json({ error: "Tugas tidak ditemukan." });
+router.get("/:id", async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id)) {
+      return res.status(400).json({ error: "ID tugas tidak valid." });
+    }
+
+    const { rows } = await query(
+      `SELECT id, user_id, mata_kuliah_id, judul, deskripsi, deadline, status, created_at
+       FROM tugas
+       WHERE id = $1 AND user_id = $2`,
+      [id, req.user.id]
+    );
+    if (rows.length === 0) {
+      return res.status(404).json({ error: "Tugas tidak ditemukan." });
+    }
+    res.json({ task: rows[0] });
+  } catch (err) {
+    console.error("Get task detail error:", err);
+    res.status(500).json({ error: "Gagal memuat detail tugas." });
   }
-  res.json({ task });
 });
 
 /**
  * POST /api/tasks
- * Menambahkan tugas baru dengan status awal "belum".
- *
- * Body     : { mata_kuliah_id, judul, deadline, deskripsi? }
- * Response : 201 { task } | 400 input tidak valid atau mata kuliah bukan milik user
  */
-router.post("/", (req, res) => {
-  const { mata_kuliah_id, judul, deskripsi, deadline } = req.body;
-  if (!mata_kuliah_id || !judul || !deadline) {
-    return res.status(400).json({ error: "mata_kuliah_id, judul, dan deadline wajib diisi." });
-  }
+router.post("/", async (req, res) => {
+  try {
+    const { mata_kuliah_id, judul, deskripsi, deadline } = req.body;
+    if (!mata_kuliah_id || !judul || !deadline) {
+      return res.status(400).json({ error: "mata_kuliah_id, judul, dan deadline wajib diisi." });
+    }
 
-  const db = readDB();
-  const course = db.courses.find((c) => c.id === Number(mata_kuliah_id) && c.user_id === req.user.id);
-  if (!course) {
-    return res.status(400).json({ error: "Mata kuliah tidak ditemukan untuk user ini." });
-  }
+    const courseId = Number(mata_kuliah_id);
+    const courseRes = await query(
+      "SELECT id FROM mata_kuliah WHERE id = $1 AND user_id = $2",
+      [courseId, req.user.id]
+    );
+    if (courseRes.rows.length === 0) {
+      return res.status(400).json({ error: "Mata kuliah tidak ditemukan untuk user ini." });
+    }
 
-  const newTask = {
-    id: db.nextIds.task++,
-    user_id: req.user.id,
-    mata_kuliah_id: Number(mata_kuliah_id),
-    judul,
-    deskripsi: deskripsi || "",
-    deadline,
-    status: "belum",
-    created_at: new Date().toISOString()
-  };
-  db.tasks.push(newTask);
-  writeDB(db);
-  res.status(201).json({ task: newTask });
+    let deadlineUtc;
+    try {
+      deadlineUtc = normalizeDeadlineToUtc(deadline);
+    } catch (e) {
+      return res.status(400).json({ error: e.message });
+    }
+
+    const { rows } = await query(
+      `INSERT INTO tugas (user_id, mata_kuliah_id, judul, deskripsi, deadline, status)
+       VALUES ($1, $2, $3, $4, $5, 'belum')
+       RETURNING id, user_id, mata_kuliah_id, judul, deskripsi, deadline, status, created_at`,
+      [req.user.id, courseId, judul.trim(), (deskripsi || "").trim(), deadlineUtc]
+    );
+
+    res.status(201).json({ task: rows[0] });
+  } catch (err) {
+    console.error("Create task error:", err);
+    res.status(500).json({ error: "Gagal menambahkan tugas." });
+  }
 });
 
 /**
  * PUT /api/tasks/:id
- * Memperbarui tugas, termasuk mengubah status. Hanya field yang dikirim yang
- * diubah.
- *
- * Body     : { judul?, deskripsi?, deadline?, status? } (status: "belum" | "selesai")
- * Response : 200 { task } | 400 status tidak valid | 404 tidak ditemukan
  */
-router.put("/:id", (req, res) => {
-  const id = Number(req.params.id);
-  const db = readDB();
-  const task = db.tasks.find((t) => t.id === id && t.user_id === req.user.id);
-  if (!task) {
-    return res.status(404).json({ error: "Tugas tidak ditemukan." });
-  }
+router.put("/:id", async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id)) {
+      return res.status(400).json({ error: "ID tugas tidak valid." });
+    }
 
-  const { judul, deskripsi, deadline, status } = req.body;
-  if (judul !== undefined) task.judul = judul;
-  if (deskripsi !== undefined) task.deskripsi = deskripsi;
-  if (deadline !== undefined) task.deadline = deadline;
-  if (status !== undefined) {
-    if (!["belum", "selesai"].includes(status)) {
+    const existing = await query(
+      `SELECT id, user_id, mata_kuliah_id, judul, deskripsi, deadline, status, created_at
+       FROM tugas
+       WHERE id = $1 AND user_id = $2`,
+      [id, req.user.id]
+    );
+    if (existing.rows.length === 0) {
+      return res.status(404).json({ error: "Tugas tidak ditemukan." });
+    }
+
+    const current = existing.rows[0];
+    const { judul, deskripsi, deadline, status } = req.body;
+
+    if (status !== undefined && !["belum", "selesai"].includes(status)) {
       return res.status(400).json({ error: "Status hanya boleh 'belum' atau 'selesai'." });
     }
-    task.status = status;
+
+    let nextDeadline = current.deadline;
+    if (deadline !== undefined) {
+      try {
+        nextDeadline = normalizeDeadlineToUtc(deadline);
+      } catch (e) {
+        return res.status(400).json({ error: e.message });
+      }
+    }
+
+    const { rows } = await query(
+      `UPDATE tugas
+       SET judul = $1, deskripsi = $2, deadline = $3, status = $4
+       WHERE id = $5 AND user_id = $6
+       RETURNING id, user_id, mata_kuliah_id, judul, deskripsi, deadline, status, created_at`,
+      [
+        judul !== undefined ? judul : current.judul,
+        deskripsi !== undefined ? deskripsi : current.deskripsi,
+        nextDeadline,
+        status !== undefined ? status : current.status,
+        id,
+        req.user.id
+      ]
+    );
+
+    res.json({ task: rows[0] });
+  } catch (err) {
+    console.error("Update task error:", err);
+    res.status(500).json({ error: "Gagal memperbarui tugas." });
   }
-  writeDB(db);
-  res.json({ task });
 });
 
 /**
  * DELETE /api/tasks/:id
- * Menghapus satu tugas.
- *
- * Response : 200 { success: true } | 404 tidak ditemukan
  */
-router.delete("/:id", (req, res) => {
-  const id = Number(req.params.id);
-  const db = readDB();
-  const task = db.tasks.find((t) => t.id === id && t.user_id === req.user.id);
-  if (!task) {
-    return res.status(404).json({ error: "Tugas tidak ditemukan." });
-  }
+router.delete("/:id", async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id)) {
+      return res.status(400).json({ error: "ID tugas tidak valid." });
+    }
 
-  db.tasks = db.tasks.filter((t) => t.id !== id);
-  writeDB(db);
-  res.json({ success: true });
+    const { rowCount } = await query(
+      "DELETE FROM tugas WHERE id = $1 AND user_id = $2",
+      [id, req.user.id]
+    );
+    if (rowCount === 0) {
+      return res.status(404).json({ error: "Tugas tidak ditemukan." });
+    }
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error("Delete task error:", err);
+    res.status(500).json({ error: "Gagal menghapus tugas." });
+  }
 });
 
 export default router;

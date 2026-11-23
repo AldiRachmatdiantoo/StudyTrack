@@ -1,91 +1,110 @@
 import { Router } from "express";
-import { readDB, writeDB } from "../db.js";
+import { query } from "../db.js";
 import { requireAuth } from "../middleware/auth.js";
 
 const router = Router();
 
-// Seluruh endpoint mata kuliah membutuhkan login.
 router.use(requireAuth);
 
 /**
  * GET /api/courses
- * Daftar mata kuliah milik pengguna yang sedang login.
- *
- * Response : 200 { courses }
  */
-router.get("/", (req, res) => {
-  const db = readDB();
-  const courses = db.courses.filter((c) => c.user_id === req.user.id);
-  res.json({ courses });
+router.get("/", async (req, res) => {
+  try {
+    const { rows } = await query(
+      "SELECT id, user_id, name, kode, dosen FROM mata_kuliah WHERE user_id = $1 ORDER BY id ASC",
+      [req.user.id]
+    );
+    res.json({ courses: rows });
+  } catch (err) {
+    console.error("Get courses error:", err);
+    res.status(500).json({ error: "Gagal memuat daftar mata kuliah." });
+  }
 });
 
 /**
  * POST /api/courses
- * Menambahkan mata kuliah baru.
- *
- * Body     : { name, kode?, dosen? }
- * Response : 201 { course } | 400 name kosong
  */
-router.post("/", (req, res) => {
-  const { name, kode, dosen } = req.body;
-  if (!name) {
-    return res.status(400).json({ error: "Nama mata kuliah wajib diisi." });
-  }
+router.post("/", async (req, res) => {
+  try {
+    const { name, kode, dosen } = req.body;
+    if (!name) {
+      return res.status(400).json({ error: "Nama mata kuliah wajib diisi." });
+    }
 
-  const db = readDB();
-  const newCourse = {
-    id: db.nextIds.course++,
-    user_id: req.user.id,
-    name,
-    kode: kode || "",
-    dosen: dosen || ""
-  };
-  db.courses.push(newCourse);
-  writeDB(db);
-  res.status(201).json({ course: newCourse });
+    const { rows } = await query(
+      `INSERT INTO mata_kuliah (user_id, name, kode, dosen)
+       VALUES ($1, $2, $3, $4)
+       RETURNING id, user_id, name, kode, dosen`,
+      [req.user.id, name.trim(), (kode || "").trim(), (dosen || "").trim()]
+    );
+    res.status(201).json({ course: rows[0] });
+  } catch (err) {
+    console.error("Create course error:", err);
+    res.status(500).json({ error: "Gagal menambahkan mata kuliah." });
+  }
 });
 
 /**
  * PUT /api/courses/:id
- * Memperbarui mata kuliah. Hanya field yang dikirim yang diubah.
- *
- * Body     : { name?, kode?, dosen? }
- * Response : 200 { course } | 404 tidak ditemukan
  */
-router.put("/:id", (req, res) => {
-  const id = Number(req.params.id);
-  const db = readDB();
-  const course = db.courses.find((c) => c.id === id && c.user_id === req.user.id);
-  if (!course) {
-    return res.status(404).json({ error: "Mata kuliah tidak ditemukan." });
-  }
+router.put("/:id", async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id)) {
+      return res.status(400).json({ error: "ID mata kuliah tidak valid." });
+    }
 
-  const { name, kode, dosen } = req.body;
-  if (name !== undefined) course.name = name;
-  if (kode !== undefined) course.kode = kode;
-  if (dosen !== undefined) course.dosen = dosen;
-  writeDB(db);
-  res.json({ course });
+    const existing = await query(
+      "SELECT id, user_id, name, kode, dosen FROM mata_kuliah WHERE id = $1 AND user_id = $2",
+      [id, req.user.id]
+    );
+    if (existing.rows.length === 0) {
+      return res.status(404).json({ error: "Mata kuliah tidak ditemukan." });
+    }
+
+    const current = existing.rows[0];
+    const name = req.body.name !== undefined ? req.body.name : current.name;
+    const kode = req.body.kode !== undefined ? req.body.kode : current.kode;
+    const dosen = req.body.dosen !== undefined ? req.body.dosen : current.dosen;
+
+    const { rows } = await query(
+      `UPDATE mata_kuliah
+       SET name = $1, kode = $2, dosen = $3
+       WHERE id = $4 AND user_id = $5
+       RETURNING id, user_id, name, kode, dosen`,
+      [name, kode, dosen, id, req.user.id]
+    );
+    res.json({ course: rows[0] });
+  } catch (err) {
+    console.error("Update course error:", err);
+    res.status(500).json({ error: "Gagal memperbarui mata kuliah." });
+  }
 });
 
 /**
  * DELETE /api/courses/:id
- * Menghapus mata kuliah beserta seluruh tugas di dalamnya.
- *
- * Response : 200 { success: true } | 404 tidak ditemukan
  */
-router.delete("/:id", (req, res) => {
-  const id = Number(req.params.id);
-  const db = readDB();
-  const course = db.courses.find((c) => c.id === id && c.user_id === req.user.id);
-  if (!course) {
-    return res.status(404).json({ error: "Mata kuliah tidak ditemukan." });
-  }
+router.delete("/:id", async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id)) {
+      return res.status(400).json({ error: "ID mata kuliah tidak valid." });
+    }
 
-  db.courses = db.courses.filter((c) => c.id !== id);
-  db.tasks = db.tasks.filter((t) => t.mata_kuliah_id !== id);
-  writeDB(db);
-  res.json({ success: true });
+    const { rowCount } = await query(
+      "DELETE FROM mata_kuliah WHERE id = $1 AND user_id = $2",
+      [id, req.user.id]
+    );
+    if (rowCount === 0) {
+      return res.status(404).json({ error: "Mata kuliah tidak ditemukan." });
+    }
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error("Delete course error:", err);
+    res.status(500).json({ error: "Gagal menghapus mata kuliah." });
+  }
 });
 
 export default router;
