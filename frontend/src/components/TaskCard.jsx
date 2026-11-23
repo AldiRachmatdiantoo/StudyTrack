@@ -36,7 +36,11 @@ export default function TaskCard({ task, onToggleStatus, onDelete }) {
     <div className="card task-card">
       <div>
         <strong>{task.judul}</strong>
-        <div className="meta">{task.mata_kuliah}</div>
+        <div className="meta">
+          {typeof task.mata_kuliah === "object" && task.mata_kuliah !== null
+            ? task.mata_kuliah.name
+            : task.mata_kuliah}
+        </div>
         <div className="meta">Deadline: {formatDeadline(task.deadline)}</div>
         {task.deskripsi && <div className="meta">{task.deskripsi}</div>}
       </div>

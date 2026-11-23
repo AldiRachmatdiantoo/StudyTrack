@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { query, normalizeDeadlineToUtc } from "../db.js";
 import { requireAuth } from "../middleware/auth.js";
+import { sortAndEnrichTasks } from "../services/taskOrdering.service.js";
 
 const router = Router();
 
@@ -8,10 +9,9 @@ router.use(requireAuth);
 
 /**
  * GET /api/tasks
- * Daftar seluruh tugas milik pengguna yang sedang login, lintas semua mata kuliah.
- *
- * Urutan baseline saat ini: `created_at` terbaru di atas.
- * (Klasifikasi 4-bucket F01–F04 & AI Triage akan ditambahkan pada Modul 1 & 2.)
+ * Daftar seluruh tugas milik pengguna yang sedang login lintas semua mata kuliah (F04),
+ * diklasifikasikan ke 4 bucket prioritas (F01–F03) dan diperkaya dengan AI Complexity Triage
+ * untuk Bucket 1 (`mendekati_deadline`) jika terdapat >= 2 tugas.
  */
 router.get("/", async (req, res) => {
   try {
@@ -25,14 +25,18 @@ router.get("/", async (req, res) => {
          t.deadline,
          t.status,
          t.created_at,
-         mk.name AS mata_kuliah
+         mk.id AS mk_id,
+         mk.kode AS mk_kode,
+         mk.name AS mk_name
        FROM tugas t
        INNER JOIN mata_kuliah mk ON mk.id = t.mata_kuliah_id
-       WHERE mk.user_id = $1
+       WHERE t.user_id = $1 AND mk.user_id = $1
        ORDER BY t.created_at DESC`,
       [req.user.id]
     );
-    res.json({ tasks: rows });
+
+    const tasks = await sortAndEnrichTasks(rows);
+    res.json({ tasks });
   } catch (err) {
     console.error("Get tasks error:", err);
     res.status(500).json({ error: "Gagal memuat daftar tugas." });
