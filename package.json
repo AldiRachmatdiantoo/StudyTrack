@@ -2,6 +2,7 @@
   "name": "studytrack-monorepo",
   "version": "1.0.0",
   "private": true,
+  "type": "module",
   "scripts": {
     "install:all": "npm --prefix backend install && npm --prefix frontend install",
     "build": "npm --prefix backend install && npm --prefix frontend install && npm --prefix frontend run build",
