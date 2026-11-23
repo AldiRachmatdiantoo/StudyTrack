@@ -10,7 +10,8 @@
     "db:seed": "node db/seed.js",
     "test:ai": "node tests/aiPrioritizer.test.js",
     "test:deadline": "node tests/deadlineOrdering.test.js",
-    "test": "node tests/aiPrioritizer.test.js && node tests/deadlineOrdering.test.js"
+    "test:qa": "node tests/qaMatrix.test.js",
+    "test": "node tests/aiPrioritizer.test.js && node tests/deadlineOrdering.test.js && node tests/qaMatrix.test.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
