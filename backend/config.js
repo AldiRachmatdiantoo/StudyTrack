@@ -21,5 +21,6 @@ export const DB_SSL =
   DATABASE_URL.includes("supabase.co");
 
 export const OPENAI_API_KEY = (process.env.OPENAI_API_KEY || "").trim();
+export const OPENAI_BASE_URL = (process.env.OPENAI_BASE_URL || "").trim();
 export const OPENAI_MODEL = (process.env.OPENAI_MODEL || "gpt-4o-mini").trim();
 export const OPENAI_TIMEOUT_MS = Number(process.env.OPENAI_TIMEOUT_MS) || 3500;

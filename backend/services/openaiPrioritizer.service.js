@@ -4,7 +4,7 @@
  * dan Graceful Fallback (`deadline ASC`) jika API key kosong, error, atau timeout (> 3500ms).
  */
 import OpenAI from "openai";
-import { OPENAI_API_KEY, OPENAI_MODEL, OPENAI_TIMEOUT_MS } from "../config.js";
+import { OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_MODEL, OPENAI_TIMEOUT_MS } from "../config.js";
 import {
   ITaskPrioritizerService,
   COMPLEXITY_TRIAGE_JSON_SCHEMA,
@@ -39,6 +39,8 @@ export class OpenAiPrioritizerProvider extends ITaskPrioritizerService {
   constructor(options = {}) {
     super();
     this.apiKey = options.apiKey !== undefined ? String(options.apiKey).trim() : OPENAI_API_KEY;
+    this.baseURL =
+      options.baseURL !== undefined ? String(options.baseURL).trim() : OPENAI_BASE_URL;
     this.model = options.model || OPENAI_MODEL || "gpt-4o-mini";
     this.timeoutMs = Number(options.timeoutMs) > 0 ? Number(options.timeoutMs) : OPENAI_TIMEOUT_MS;
     this.cacheTtlMs =
@@ -55,6 +57,7 @@ export class OpenAiPrioritizerProvider extends ITaskPrioritizerService {
     } else if (this.apiKey) {
       this.client = new OpenAI({
         apiKey: this.apiKey,
+        ...(this.baseURL ? { baseURL: this.baseURL } : {}),
         timeout: this.timeoutMs,
         maxRetries: 0
       });
